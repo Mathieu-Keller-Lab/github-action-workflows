@@ -1,0 +1,121 @@
+name: Build-Dev Service
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  dry-release:
+    name: dry-release
+    runs-on: ubuntu-22.04
+    outputs:
+      has_new_version: ${{ steps.release.outputs.has_new_version }}
+      new_version: ${{ steps.save-version.outputs.new_release_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        if: ${{ github.ref != 'refs/heads/master' }} &&  ${{ github.ref != 'refs/heads/main' }}
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+      - name: Checkout
+        uses: actions/checkout@v4
+        if: ${{ github.ref == 'refs/heads/master' }} ||  ${{ github.ref == 'refs/heads/main' }}
+        with:
+          fetch-depth: 0
+      - name: pnpm setup
+        run: npm install -g pnpm@7
+      - name: Release
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Trick semantic-release into thinking we're not in a CI environment
+          unset GITHUB_ACTIONS
+
+          pnpm install semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/exec @semantic-release/git @semantic-release/github
+          pnpx semantic-release --dry-run --no-ci --branches ${GITHUB_HEAD_REF:-master}
+
+          if [[ -f VERSION.txt ]] && [[ -f RELEASE_NOTES.txt ]]; then
+            echo "release_version=$(cat VERSION.txt)" >> $GITHUB_OUTPUT
+
+            echo "release_note<<EOF" >> $GITHUB_OUTPUT
+            cat RELEASE_NOTES.txt >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+
+            echo "has_new_version=true" >> $GITHUB_OUTPUT
+          else
+            echo 'has_new_version=false' >> $GITHUB_OUTPUT
+          fi
+      - name: save-version-in-output
+        id: save-version
+        if: ${{ steps.release.outputs.has_new_version == 'true' }}
+        run: |
+          if [[ ${{ github.ref }} == "refs/heads/master" ]]; then
+            echo "new_release_version=${{ steps.release.outputs.release_version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "new_release_version=$(echo ${GITHUB_HEAD_REF} | sed -r 's/\//_/g')_$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+      - name: write release notes preview
+        uses: actions/github-script@v6
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            })
+            const botComment = comments.find(comment => comment.user.type === 'Bot' && comment.body.includes('# Release Info'))
+            const body = ${{steps.release.outputs.has_new_version}} === true ? 
+            `# Release Info
+             <details>
+               <summary>Release will be <strong>${{ steps.release.outputs.release_version }}</strong>, Show Release Notes</summary>
+
+               ${{ steps.release.outputs.release_note }}
+             </details>` :
+             `# Release Info
+              ⚠⚠⚠ This pull request will not create a new release. ⚠⚠⚠`;
+            if (botComment) {
+              github.rest.issues.updateComment({
+               issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body
+              })
+            } else {
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body
+              })
+            }
+  release:
+    name: release
+    needs: [build-and-push-docker-image]
+    runs-on: ubuntu-22.04
+    if: ${{ github.ref == 'refs/heads/master' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: pnpm setup
+        run: npm install -g pnpm@7
+      - name: Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pnpm install semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/exec @semantic-release/git @semantic-release/github
+          pnpx semantic-release --dry-run --no-ci --branches ${GITHUB_HEAD_REF:-master}
+          pnpx semantic-release --branches master
