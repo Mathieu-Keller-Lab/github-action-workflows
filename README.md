@@ -4,6 +4,7 @@ This GitHub Actions workflow automates the process of creating semantic releases
 
 ## Workflow Configuration
 
+
 ### YAML Configuration
 
 To use this workflow, add the following YAML configuration to your repository's `.github/workflows` directory in a file, e.g., `semantic-release.yml`:
