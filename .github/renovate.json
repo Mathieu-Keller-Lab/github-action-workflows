@@ -34,7 +34,8 @@
   "packageRules": [
     {
       "matchManagers": [
-        "npm"
+        "npm",
+        "github-actions"
       ],
       "semanticCommitType": "fix"
     }
