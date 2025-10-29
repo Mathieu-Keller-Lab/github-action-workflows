@@ -61,7 +61,8 @@ jobs:
           tagFormat: "\${version}"
           plugins:
             - "@semantic-release/commit-analyzer"
-            - "@semantic-release/release-notes-generator"
+            - - "@semantic-release/release-notes-generator"
+              - output: release_notes.txt
             - - "@semantic-release/exec"
               - verifyReleaseCmd: "echo \"\${nextRelease.version}\" > VERSION.txt;"
             - "@semantic-release/git"
@@ -74,7 +75,7 @@ jobs:
           # Trick semantic-release into thinking we're not in a CI environment
           unset GITHUB_ACTIONS
           if [[ ${{ inputs.dry }} == 'true' ]]; then
-            npx semantic-release --dry-run --no-ci --branches ${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}},${{ inputs.release-branch }}
+            npx semantic-release --dry-run --no-ci --branches ${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}},${{ inputs.release-branch }} > release_notes.txt 2>&1
           else 
             npx semantic-release --branches ${{ inputs.release-branch }}
           fi
@@ -98,24 +99,46 @@ jobs:
       - name: write release notes preview
         uses: actions/github-script@v8
         if: ${{ github.event_name == 'pull_request' && inputs.dry == true}}
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
+          HAS_NEW_VERSION: ${{ steps.release.outputs.has_new_version }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const fs = require('fs');
+            const releaseNotesRaw = fs.existsSync('release_notes.txt') ? fs.readFileSync('release_notes.txt', 'utf8') : '';
+            const hasNewVersion = process.env.HAS_NEW_VERSION === 'true';
+            const releaseVersion = process.env.RELEASE_VERSION;
+
+            // Parse release notes from output (extract after "Release note for version")
+            const lines = releaseNotesRaw.split('\n');
+            let start = false;
+            let notes = [];
+            for (const line of lines) {
+              if (line.includes('Release note for version')) {
+                start = true;
+                continue;
+              }
+              if (start) {
+                notes.push(line);
+              }
+            }
+            const releaseNotesText = notes.join('\n').trim();
+
+            // Set body to only the release notes (or a fallback message)
+            let body = releaseNotesText || 'No release notes available.';
+
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
             });
-            const botComment = comments.find(comment => comment.user.type === 'Bot' && comment.body.includes('# Release Info'));
-            let body =  `# Release Info
-              ⚠⚠⚠ This pull request will not create a new release. ⚠⚠⚠`;
-            if(${{steps.release.outputs.has_new_version}} === true) {
-              body = `# Release Info
-              Release will be <strong>${{steps.release.outputs.release_version}}</strong>`;
-            }
+        
+            const botComment = comments.find(comment => comment.user.type === 'Bot' && comment.body.includes('# Release Info'));  // Update this search if needed
+            body = "# Release Info\n" + body; 
             if (botComment) {
               github.rest.issues.updateComment({
-               issue_number: context.issue.number,
+                issue_number: context.issue.number,
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 comment_id: botComment.id,
